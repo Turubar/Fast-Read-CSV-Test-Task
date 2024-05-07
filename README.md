@@ -15,6 +15,6 @@
  <p>Набор данных для скачивания содержит информацию о продажах онлайн магазина.<br>
 https://www.kaggle.com/datasets/mkechinov/ecommerce-behavior-data-from-multi-category-store</p><br>
 <h1>Использование</h1>
-<p>Приложение принимает 1 аргумент в виде строки, которая содержит путь к .csv файлу (из набора данных)</p><br>
-<p>Пример запуска в командой строке: 'путь_к_файлу_приложения.exe путь_к_файлу.csv'</p><br>
-<p>Пример: 'D:\Solutions\MyTestApp\MyTestApp\bin\Debug\net6.0\MyTestApp.exe D:\Solutions\MyTestApp\MyTestApp\data\2019-Oct.csv'</p>
+<p>Приложение принимает 1 аргумент в виде строки, которая содержит путь к .csv файлу (из набора данных)</p>
+<p>Пример запуска в командой строке: 'путь_к_файлу_приложения.exe путь_к_файлу.csv'</p>
+<p>Пример: 'D:\Solutions\MyTestApp\MyTestApp\bin\Debug\net6.0\MyTestApp.exe D:\Solutions\MyTestApp\MyTestApp\data\2019-Oct.csv'
