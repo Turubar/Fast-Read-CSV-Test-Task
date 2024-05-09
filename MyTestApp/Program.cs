@@ -1,5 +1,8 @@
-﻿using System.Diagnostics;
+﻿using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Globalization;
+using System.Linq;
+using System.Threading.Tasks;
 
 namespace MyTestApp
 {
@@ -17,14 +20,14 @@ namespace MyTestApp
         static Stopwatch timer = new Stopwatch();
 
         // Кол-во строк всего/обработано
-        static long countLinesTotal = 0;
-        static long countLinesProcessed = 0;
+        static long countLinesTotal = - 1;
+        static long countLinesProcessed = - 1;
 
         // Словари для хранения названий (Key) и кол-ва покупок (Value)
         static decimal amount = 0;
-        static Dictionary<string, int> products = new Dictionary<string, int>();
-        static Dictionary<string, int> categories = new Dictionary<string, int>();
-        static Dictionary<string, int> brands = new Dictionary<string, int>();
+        static ConcurrentDictionary<string, int> products = new ConcurrentDictionary<string, int>();
+        static ConcurrentDictionary<string, int> categories = new ConcurrentDictionary<string, int>();
+        static ConcurrentDictionary<string, int> brands = new ConcurrentDictionary<string, int>();
 
         // Объекты-локеры для обеспечения потокобезопасноти
         static object lockerProcessing = new object();
@@ -74,9 +77,13 @@ namespace MyTestApp
                     {
                         Console.WriteLine("Подсчитываем кол-во строк в файле...");
                         timer.Start();
-                        countLinesTotal = ServiceClass.GetRowCount(mainFile.FullName);
-                        timer.Stop();
 
+                        foreach (var line in File.ReadLines(path))
+                        {
+                            countLinesTotal++;
+                        }
+
+                        timer.Stop();
                         Console.WriteLine($"На подсчет было затрачено: {timer.ElapsedMilliseconds / 1000} с.");
                         Thread.Sleep(3000);
 
@@ -87,9 +94,13 @@ namespace MyTestApp
                 {
                     Console.WriteLine("Подсчитываем кол-во строк в файле...");
                     timer.Start();
-                    countLinesTotal = ServiceClass.GetRowCount(mainFile.FullName);
-                    timer.Stop();
 
+                    foreach (var line in File.ReadLines(path))
+                    {
+                        countLinesTotal++;
+                    }
+
+                    timer.Stop();
                     Console.WriteLine($"На подсчет было затрачено: {timer.ElapsedMilliseconds / 1000} с.");
                     Thread.Sleep(3000);
 
@@ -104,18 +115,25 @@ namespace MyTestApp
             }
 
             Console.Clear();
-            Console.WriteLine($"Входной файл: [{mainFile.FullName}], Буферный файл: [{dataFile.FullName}]");
+            Console.WriteLine($"Входной файл: [{mainFile.FullName}]");
+            Console.WriteLine($"Буферный файл: [{dataFile.FullName}]");
             Console.WriteLine();
 
-            // Создаем и запускаем поток, который будет читать и обрабатывать файл
-            Thread readerThread = new Thread(new ThreadStart(ReadFile));
             timer.Restart();
-            timer.Start();
-            readerThread.Start();
+
+            // Создаем и запускаем поток, который будет читать и обрабатывать файл
+            var processingTask = new Task(() =>
+            {
+                ReadingProcessingLines();
+            });
+            processingTask.Start();
 
             // Создаем и запускаем поток, который выводить прогресс обработки
-            Thread statisticsThread = new Thread(new ThreadStart(GetStatistics));
-            statisticsThread.Start();
+            var statisticsTask = new Task(() =>
+            {
+                GetStatistics();
+            });
+            statisticsTask.Start();
 
             // Ждем нажатия Пробела (Spacebar), если нужно остановить/запустить работу приложения
             while (!finish)
@@ -145,57 +163,68 @@ namespace MyTestApp
                     }
                 }
             }
+
+            processingTask.Wait();
+            statisticsTask.Wait();
         }
 
-        static void ReadFile()
+        static void ReadingProcessingLines()
         {
-            foreach (var linesPart in ServiceClass.ReadAllLines(path, 300_000))
+            int countLines = 0;
+            var lines = File.ReadLines(path);
+
+            Parallel.ForEach(lines, (line, loop) =>
             {
-                foreach (var line in linesPart)
+                while (pause)
                 {
-                    string[] columns = line.Split(",");
+                    lock (lockerPause)
+                    {
+                        if (!pause) break;
+                    }
+                }
+
+                var columns = line.Split(',');
+
+                if (columns[1] == "purchase")
+                {
+                    products.AddOrUpdate(columns[2], 1, (key, oldValue) => oldValue + 1);
+                    categories.AddOrUpdate(columns[3], 1, (key, oldValue) => oldValue + 1);
+
+                    if (columns[5] != "")
+                    {
+                        brands.AddOrUpdate(columns[5], 1, (key, oldValue) => oldValue + 1);
+                    }
 
                     lock (lockerProcessing)
                     {
-                        if (countLinesProcessed >= countLinesTotal) break;
-
-                        if (columns[1] == "purchase")
-                        {
-                            if (products.ContainsKey(columns[2])) products[columns[2]] += 1;
-                            else products.Add(columns[2], 1);
-
-                            if (categories.ContainsKey(columns[3])) categories[columns[3]] += 1;
-                            else categories.Add(columns[3], 1);
-
-                            if (columns[5] != "")
-                            {
-                                if (brands.ContainsKey(columns[5])) brands[columns[5]] += 1;
-                                else brands.Add(columns[5], 1);
-                            }
-
-                            amount += decimal.Parse(columns[6], NumberStyles.AllowDecimalPoint);
-                        }
-
+                        amount += decimal.Parse(columns[6], NumberStyles.AllowDecimalPoint);
                         countLinesProcessed++;
+                        countLines++;
                     }
-
-                    if (pause)
+                }
+                else
+                {
+                    lock (lockerProcessing)
                     {
-                        while (pause)
-                        {
-                            lock (lockerPause)
-                            {
-                                if (!pause) break;
-                            }
-                        }
+                        countLinesProcessed++;
+                        countLines++;
+                    }
+                }
+
+                if (countLines >= 300_000)
+                {
+                    lock (lockerStatistics)
+                    {
+                        statistics = true;
+                        countLines = 0;
                     }
                 }
 
                 lock (lockerStatistics)
                 {
-                    statistics = true;
+                    if (countLinesProcessed >= countLinesTotal) countLinesTotal = countLinesProcessed;
                 }
-            }
+            });
 
             lock (lockerProcessing)
             {
@@ -217,67 +246,63 @@ namespace MyTestApp
                 {
                     if (statistics)
                     {
-                        lock (lockerProcessing)
+                        lock (lockerPause)
                         {
-                            lock (lockerPause)
+                            if (countLinesProcessed <= 0 || countLinesTotal <= 0) continue;
+                            if (products.Count <= 0 || categories.Count <= 0 || brands.Count <= 0) continue;
+
+                            if (countLinesProcessed == countLinesTotal)
                             {
-                                if (countLinesProcessed <= 0 || countLinesTotal <= 0) continue;
-                                if (products.Count <= 0 || categories.Count <= 0 || brands.Count <= 0) continue;
-
-                                Console.SetCursorPosition(0, 2);
-                                Console.Write("Обработано: ");
-                                Console.SetCursorPosition(12, 2);
-                                Console.Write("                                                                             ");
-                                Console.SetCursorPosition(12, 2);
-                                float percent = ((float)countLinesProcessed / countLinesTotal) * 100;
-                                Console.Write(percent.ToString("F2") + $"% ({countLinesTotal} / {countLinesProcessed}) (Время: {timer.Elapsed.TotalSeconds.ToString("F2")} с. / Пауза: {pause})");
-
-                                Console.SetCursorPosition(0, 3);
-                                Console.Write("Сумма выручки: ");
-                                Console.SetCursorPosition(15, 3);
-                                Console.Write("                                                                             ");
-                                Console.SetCursorPosition(15, 3);
-                                Console.Write(amount.ToString("C2"));
-
-                                Console.SetCursorPosition(0, 4);
-                                Console.Write("Самый популярный товар: ");
-                                Console.SetCursorPosition(24, 4);
-                                Console.Write("                                                                             ");
-                                Console.SetCursorPosition(24, 4);
-                                var product = products.MaxBy(x => x.Value);
-                                Console.Write(product.Key + $" ({product.Value})");
-
-                                Console.SetCursorPosition(0, 5);
-                                Console.Write("Самая популярная категория: ");
-                                Console.SetCursorPosition(28, 5);
-                                Console.Write("                                                                             ");
-                                Console.SetCursorPosition(28, 5);
-                                var category = categories.MaxBy(x => x.Value);
-                                Console.WriteLine(category.Key + $" ({category.Value})");
-
-                                Console.SetCursorPosition(0, 6);
-                                Console.Write("Самый популярный бренд: ");
-                                Console.SetCursorPosition(24, 6);
-                                Console.Write("                                                                             ");
-                                Console.SetCursorPosition(24, 6);
-                                var brand = brands.MaxBy(x => x.Value);
-                                Console.Write(brand.Key + $" ({brand.Value})");
-                                Console.WriteLine();
-
-                                if (countLinesProcessed == countLinesTotal)
+                                lock (lockerFinish)
                                 {
-                                    lock (lockerFinish)
-                                    {
-                                        finish = true;
-                                    }
+                                    finish = true;
                                 }
-
-                                statistics = false;
                             }
+
+                            Console.SetCursorPosition(0, 3);
+                            Console.Write("Обработано: ");
+                            Console.SetCursorPosition(12, 3);
+                            Console.Write("                                                                             ");
+                            Console.SetCursorPosition(12, 3);
+                            float percent = ((float)countLinesProcessed / countLinesTotal) * 100;
+                            Console.Write(percent.ToString("F2") + $"% ({countLinesTotal} / {countLinesProcessed}) (Время: {timer.Elapsed.TotalSeconds.ToString("F2")} с. / Пауза: {pause})");
+
+                            Console.SetCursorPosition(0, 4);
+                            Console.Write("Сумма выручки: ");
+                            Console.SetCursorPosition(15, 4);
+                            Console.Write("                                                                             ");
+                            Console.SetCursorPosition(15, 4);
+                            Console.Write(amount.ToString("C2"));
+
+                            Console.SetCursorPosition(0, 5);
+                            Console.Write("Самый популярный товар: ");
+                            Console.SetCursorPosition(24, 5);
+                            Console.Write("                                                                             ");
+                            Console.SetCursorPosition(24, 5);
+                            var product = products.MaxBy(x => x.Value);
+                            Console.Write(product.Key + $" ({product.Value})");
+
+                            Console.SetCursorPosition(0, 6);
+                            Console.Write("Самая популярная категория: ");
+                            Console.SetCursorPosition(28, 6);
+                            Console.Write("                                                                             ");
+                            Console.SetCursorPosition(28, 6);
+                            var category = categories.MaxBy(x => x.Value);
+                            Console.WriteLine(category.Key + $" ({category.Value})");
+
+                            Console.SetCursorPosition(0, 7);
+                            Console.Write("Самый популярный бренд: ");
+                            Console.SetCursorPosition(24, 7);
+                            Console.Write("                                                                             ");
+                            Console.SetCursorPosition(24, 7);
+                            var brand = brands.MaxBy(x => x.Value);
+                            Console.Write(brand.Key + $" ({brand.Value})");
+                            Console.WriteLine();
+
+                            statistics = false;
                         }
                     }
                 }
-                Thread.Sleep(50);
             }
 
             // После завершения обработки выводим дополнительную информацию
